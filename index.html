@@ -7,7 +7,7 @@
     <link rel="stylesheet" href="/css/starter-sample.css" />
     <script src="https://code.jquery.com/jquery-3.2.1.min.js"></script>
     <script
-      src="https://unpkg.com/obniz@4.0.0/obniz.js"
+      src="https://unpkg.com/obniz@3.0.0/obniz.js"
       crossorigin="anonymous"
     ></script>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js" integrity="sha384-geWF76RCwLtnZ8qwWowPQNguL3RmwHVBC9FhGdlKrxdiJJigb/j/68SIy3Te4Bkz" crossorigin="anonymous"></script>
@@ -24,9 +24,9 @@
 
 
   <!-- 動画をupしたらここに表示する -->
-  <div class="mt-4 ms-4">
-    <video src="" width="1280px" controls style="visibility: hidden;"></video>
-    <canvas id="roudness-graph" width="1280px" height="120px" style="backgroud: black;">></canvas>
+  <div id="video-container" class="mt-4 ms-4" style="visibility: hidden;">
+    <video src="" width="1280px" controls></video>
+    <canvas id="roudness-graph" width="1280px" height="120px" style="display: block;"></canvas>
   </div>
 
   <!-- 結果表示 -->
@@ -38,14 +38,14 @@
   <script>
     const obniz = new Obniz("OBNIZ_ID_HERE");
 
-    const fileInput     = document.getElementById('fileInput');
-    const analyzeButton = document.getElementById('analyzeButton');
-    const statusEl      = document.getElementById('status');
-    const outputEl      = document.getElementById('output');
-    const videoEl       = document.querySelector('video');
-    const resutlEl      = document.getElementById('result');
+    const fileInput             = document.getElementById('fileInput');
+    const analyzeButton         = document.getElementById('analyzeButton');
+    const statusEl              = document.getElementById('status');
+    const outputEl              = document.getElementById('output');
+    const videoEl               = document.querySelector('video');
+    const resutlEl              = document.getElementById('result');
+    const videoContainerEL      = document.getElementById('video-container');
 
-    let audioContext = null;
     let decodedBuffer = null;
 
     let turnTimings = [];   // トレーを回転するタイミングの配列
@@ -89,10 +89,8 @@
         const arrayBuffer = await file.arrayBuffer();
 
         // AudioContext の初期化
-        if (!audioContext) {
-          const AC = window.AudioContext || window.webkitAudioContext;
-          audioContext = new AC({ sampleRate: 44100 });
-        }
+        const AC = window.AudioContext || window.webkitAudioContext;
+        const audioContext = new AC();
 
         // 音声デコード
         decodedBuffer = await decodeAudio(arrayBuffer, audioContext);
@@ -100,6 +98,9 @@
         statusEl.textContent =
           `音声をデコードしました: ${decodedBuffer.sampleRate} Hz, ` +
           `${decodedBuffer.numberOfChannels} ch, 長さ ${durationSec.toFixed(1)} 秒。解析中...`;
+
+        // AudioContextのクローズ
+        await audioContext.close();
 
         // 解析本体
         const result = analyzeLoudness(decodedBuffer);
@@ -109,7 +110,7 @@
         statusEl.textContent =
           '解析完了！';
         analyzeButton.disabled = false;
-        videoEl.style.visibility = "visible";
+        videoContainerEL.style.visibility = "visible";
         resutlEl.style.visibility = "visible";
       } catch (e) {
         console.error(e);
@@ -128,9 +129,10 @@
 
       // 動画の再生時間が変化したとき
       videoEl.addEventListener('timeupdate', async() => {
+        console.log('再生時間が変化しました');
         let currentTimeInteger = Math.round(videoEl.currentTime);
 
-        // 音量変化がない動画の場合はこの関数は通らない(再生開始後のみに限定)
+        // 音量変化がない動画の場合はreturn
         if (currentTimeInteger && !turnTimings?.length) {
           statusEl.textContent =
             '全体的に音量に変化がないか、解析が失敗している可能性があります。';
@@ -253,10 +255,16 @@
     function rmsToDb(rmsArray) {
       const EPS = 1e-12;
       let maxRms = 0;
+
+      // RMSの最大値を探す
       for (const r of rmsArray) {
-        if (r > maxRms) maxRms = r;
+        if (r > maxRms) {
+          maxRms = r;
+        }
       }
+      // 0を避けるために小さい値を足す
       const ref = maxRms + EPS;
+      // 各要素をRMS→dBに変換
       return rmsArray.map(r => 20 * Math.log10((r + EPS) / ref));
     }
 
