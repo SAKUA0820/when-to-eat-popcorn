@@ -1,0 +1,381 @@
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ポップコーン食べどき検出</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-9ndCyUaIbzAi2FUVXJi0CjmCapSmO7SnpJef0486qhLnuZ2cdeRhO02iuK6FUUVM" crossorigin="anonymous">
+    <link rel="stylesheet" href="/css/starter-sample.css" />
+    <script src="https://code.jquery.com/jquery-3.2.1.min.js"></script>
+    <script
+      src="https://unpkg.com/obniz@4.0.0/obniz.js"
+      crossorigin="anonymous"
+    ></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js" integrity="sha384-geWF76RCwLtnZ8qwWowPQNguL3RmwHVBC9FhGdlKrxdiJJigb/j/68SIy3Te4Bkz" crossorigin="anonymous"></script>
+  </head>
+  <body>
+    <!-- <div id="obniz-debug"></div> -->
+
+  <!-- ファイル入力とボタン -->
+  <div>
+    <p id="status" class="mt-4 ms-4">動画ファイルを選択してください（mp4推奨）</p>
+    <input id="fileInput" type="file" accept="audio/*,video/*" class="ms-4"><br>
+    <button id="analyzeButton" class="btn btn-primary mt-4 ms-4" disabled>ポップコーンの食べどきを探す</button>
+  </div>
+
+
+  <!-- 動画をupしたらここに表示する -->
+  <div class="mt-4 ms-4">
+    <video src="" width="1280px" controls style="visibility: hidden;"></video>
+    <canvas id="roudness-graph" width="1280px" height="120px" style="backgroud: black;">></canvas>
+  </div>
+
+  <!-- 結果表示 -->
+  <div id="result" class="ms-4 mt-4 mb-4" style="visibility: hidden;">
+    <p>検出結果</p>
+    <pre id="output""></pre>
+  </div>
+
+  <script>
+    const obniz = new Obniz("OBNIZ_ID_HERE");
+
+    const fileInput     = document.getElementById('fileInput');
+    const analyzeButton = document.getElementById('analyzeButton');
+    const statusEl      = document.getElementById('status');
+    const outputEl      = document.getElementById('output');
+    const videoEl       = document.querySelector('video');
+    const resutlEl      = document.getElementById('result');
+
+    let audioContext = null;
+    let decodedBuffer = null;
+
+    let turnTimings = [];   // トレーを回転するタイミングの配列
+
+    // ===== パラメータ（ここをいじって調整する） =====
+    const FRAME_SEC      = 0.2;   // 0.2秒ごとに音の大きさを測る
+    const HOP_SEC        = 0.05;   // 0.05秒ずつずらしながら測る
+    const SMOOTH_SEC     = 2.0;    // 2秒くらいでなめらかにする
+    const RISE_DB_PER_S  = +1.0;   // これ以上の勢いで上がったら「うるさくなり始め」
+    const FALL_DB_PER_S  = -1.0;   // これ以下の勢いで下がったら「静かになり始め」
+    const MIN_GAP_SEC    = 2.5;    // イベント同士の最小間隔
+    const LOUD_PREROLL_SEC    = 1.0;    // 音が大きくなってから何秒後に回転を始めるか
+    const QUIET_PREROLL_SEC   = 2.0;    // 音が小さくなる何秒前に回転を始めるか
+
+    // ファイルを選んだら解析ボタンを有効にする
+    fileInput.addEventListener('change', () => {
+      const file = fileInput.files?.[0];
+      if (file) {
+        analyzeButton.disabled = false;
+        statusEl.textContent = `${file.name} が選択されました。サイズ ${(file.size / 1024 / 1024).toFixed(1)} MB`;
+
+        // Blobでページに動画を埋め込む
+        let URL = window.URL || window.webkitURL;
+        videoEl.src = URL.createObjectURL(file);
+      } else {
+        analyzeButton.disabled = true;
+        statusEl.textContent = '音声ファイルを選んでください';
+      }
+      outputEl.textContent = '';
+    });
+
+    // 「解析する」を押したとき
+    analyzeButton.addEventListener('click', async () => {
+      const file = fileInput.files?.[0];
+      if (!file) return;
+
+      analyzeButton.disabled = true;
+      statusEl.textContent = 'ファイルを読み込み中...';
+
+      try {
+        const arrayBuffer = await file.arrayBuffer();
+
+        // AudioContext の初期化
+        if (!audioContext) {
+          const AC = window.AudioContext || window.webkitAudioContext;
+          audioContext = new AC({ sampleRate: 44100 });
+        }
+
+        // 音声デコード
+        decodedBuffer = await decodeAudio(arrayBuffer, audioContext);
+        const durationSec = decodedBuffer.length / decodedBuffer.sampleRate;
+        statusEl.textContent =
+          `音声をデコードしました: ${decodedBuffer.sampleRate} Hz, ` +
+          `${decodedBuffer.numberOfChannels} ch, 長さ ${durationSec.toFixed(1)} 秒。解析中...`;
+
+        // 解析本体
+        const result = analyzeLoudness(decodedBuffer);
+        showEvents(result.events);
+        turnTimings =  [...result.events];
+
+        statusEl.textContent =
+          '解析完了！';
+        analyzeButton.disabled = false;
+        videoEl.style.visibility = "visible";
+        resutlEl.style.visibility = "visible";
+      } catch (e) {
+        console.error(e);
+        statusEl.textContent =
+          'デコードに失敗しました。';
+        analyzeButton.disabled = false;
+      }
+    });
+
+    // obniz接続時のみ回転
+    obniz.onconnect = async () => {
+      // GND
+      await obniz.io11.output(false);
+      // PWM
+      let pwm = obniz.getFreePwm();
+
+      // 動画の再生時間が変化したとき
+      videoEl.addEventListener('timeupdate', async() => {
+        let currentTimeInteger = Math.round(videoEl.currentTime);
+
+        // 音量変化がない動画の場合はこの関数は通らない(再生開始後のみに限定)
+        if (currentTimeInteger && !turnTimings?.length) {
+          statusEl.textContent =
+            '全体的に音量に変化がないか、解析が失敗している可能性があります。';
+            return;
+        }
+
+        // 動画の時刻と回転タイミングが一致した時トレーを回転させる
+        turnTimings.forEach(item => {
+          if(item.time <= currentTimeInteger && !item.haveUsed){
+            // TODO: itemの方向に回転させる
+            console.log(`turn ${item.type}`);
+            turnTray(item, pwm);
+            item.haveUsed = true;
+          }
+        });
+      });
+    }
+
+    // AudioContext.decodeAudioData を Promise でラップ
+    function decodeAudio(arrayBuffer, ctx) {
+      return new Promise((resolve, reject) => {
+        ctx.decodeAudioData(arrayBuffer, resolve, reject);
+      });
+    }
+
+    // ====== 解析本体 =======
+    function analyzeLoudness(buffer) {
+      const sr = buffer.sampleRate;
+      const channels = buffer.numberOfChannels;
+
+      // 1. モノラル化（複数chの場合は平均）
+      let samples;
+      if (channels === 1) {
+        samples = buffer.getChannelData(0);
+      } else {
+        samples = averageChannels(buffer);
+      }
+
+      // 2. フレームごとの RMS（音の大きさ）を計算
+      // プラスマイナイスで相殺しないよう、2乗平均平方根を出す
+      const frameSize = Math.max(1, Math.round(sr * FRAME_SEC)); //2乗平均平方根を出す時のサンプリング幅
+      const hopSize   = Math.max(1, Math.round(sr * HOP_SEC)); //2乗平均平方根を出す時のずらし幅
+      const rmsArray  = computeFrameRMS(samples, frameSize, hopSize);
+
+      const dt = hopSize / sr; // 1フレームあたりの時間
+
+      // 3. RMS を dB に変換（最大値を 0 dB とする）
+      const dbArray = rmsToDb(rmsArray);
+      console.log(rmsArray);
+
+      // 4. 指数移動平均でなめらかにする
+      const smoothDb = smoothExponential(dbArray, dt, SMOOTH_SEC);
+
+      // 5. 勢い（dB/秒）を計算
+      const diffDbPerSec = derivative(smoothDb, dt);
+
+      // 6. 静か側20% / うるさい側80% でしきい値を決める
+      const q20 = percentile(smoothDb, 0.25);
+      const q80 = percentile(smoothDb, 0.75);
+      const quietThreshold = q20 + 1.0; // 少し緩めにオフセット
+      const loudThreshold  = q80 - 2.0;
+
+      // 7. イベント検出（うるさくなり始め / 静かになり始め）
+      const events = detectEvents(
+        smoothDb,
+        diffDbPerSec,
+        dt,
+        loudThreshold,
+        quietThreshold,
+        RISE_DB_PER_S,
+        FALL_DB_PER_S,
+        MIN_GAP_SEC,
+        LOUD_PREROLL_SEC
+      );
+
+      return {
+        dt,
+        dbArray,
+        smoothDb,
+        diffDbPerSec,
+        loudThreshold,
+        quietThreshold,
+        events,
+      };
+    }
+
+    // ===== ユーティリティ関数たち =====
+
+    // 複数チャンネルを平均してモノラルにする
+    function averageChannels(buffer) {
+      const channels = buffer.numberOfChannels;
+      const length = buffer.length;
+      const out = new Float32Array(length);
+
+      for (let ch = 0; ch < channels; ch++) {
+        const data = buffer.getChannelData(ch);
+        for (let i = 0; i < length; i++) {
+          out[i] += data[i] / channels;
+        }
+      }
+      return out;
+    }
+
+    // フレームごとの RMS を計算
+    function computeFrameRMS(samples, frameSize, hopSize) {
+      const result = [];
+      for (let start = 0; start + frameSize <= samples.length; start += hopSize) {
+        let sumSq = 0;
+        for (let i = start; i < start + frameSize; i++) {
+          const v = samples[i];
+          sumSq += v * v;
+        }
+        const rms = Math.sqrt(sumSq / frameSize);
+        result.push(rms);
+      }
+      return result;
+    }
+
+    // RMS 配列を dB に変換（最大値を 0 dB に正規化）
+    function rmsToDb(rmsArray) {
+      const EPS = 1e-12;
+      let maxRms = 0;
+      for (const r of rmsArray) {
+        if (r > maxRms) maxRms = r;
+      }
+      const ref = maxRms + EPS;
+      return rmsArray.map(r => 20 * Math.log10((r + EPS) / ref));
+    }
+
+    // 指数移動平均でなめらかにする
+    function smoothExponential(values, dt, smoothSeconds) {
+      const alpha = Math.exp(-dt / smoothSeconds); // 0.0〜1.0
+      const out = new Array(values.length);
+      out[0] = values[0];
+      for (let i = 1; i < values.length; i++) {
+        out[i] = alpha * out[i - 1] + (1 - alpha) * values[i];
+      }
+      return out;
+    }
+
+    // 1次微分（隣との差分）で dB/秒 を近似
+    function derivative(values, dt) {
+      const out = new Array(values.length);
+      out[0] = 0;
+      for (let i = 1; i < values.length; i++) {
+        out[i] = (values[i] - values[i - 1]) / dt;
+      }
+      return out;
+    }
+
+    // 単純なパーセンタイル
+    function percentile(values, p) {
+      const sorted = [...values].sort((a, b) => a - b);
+      const idx = (sorted.length - 1) * p;
+      const lo = Math.floor(idx);
+      const hi = Math.ceil(idx);
+      if (lo === hi) return sorted[lo];
+      return sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo);
+    }
+
+    // イベント検出
+    function detectEvents(
+      smoothDb,
+      diffDbPerSec,
+      dt,
+      loudThreshold,
+      quietThreshold,
+      riseThreshold,
+      fallThreshold,
+      minGapSec,
+      prerollSec
+    ) {
+      const events = [];
+      let lastEventTime = -Infinity;
+
+      // 最初の状態（静かな場面か、うるさい場面か）をざっくり決める
+      const mid = (loudThreshold + quietThreshold) / 2;
+      let state = smoothDb[0] < mid ? 'quiet' : 'loud';
+
+      for (let i = 0; i < smoothDb.length; i++) {
+        const level = smoothDb[i];
+        const slope = diffDbPerSec[i];
+        const t = i * dt;
+
+        // イベント同士が近すぎるときはスキップ
+        if (t - lastEventTime < minGapSec) continue;
+
+        if (state === 'quiet') {
+          // 静かな状態から、うるさくなり始めたか？
+          if (level >= loudThreshold && slope >= riseThreshold) {
+            const eventTime = Math.round(Math.max(0, t + LOUD_PREROLL_SEC));
+            events.push({ time: eventTime, type: 'LOUD_START', haveUsed: false });
+            state = 'loud';
+            lastEventTime = t;
+          }
+        } else {
+          // うるさい状態から、静かになり始めたか？
+          if (level <= quietThreshold && slope <= fallThreshold) {
+            const eventTime = Math.round(Math.max(0, t - QUIET_PREROLL_SEC));
+            events.push({ time: eventTime, type: 'QUIET_START', haveUsed: false});
+            state = 'quiet';
+            lastEventTime = t;
+          }
+        }
+      }
+
+      return events;
+    }
+
+    // 検出結果を画面に表示
+    function showEvents(events) {
+      if (!events.length) {
+        outputEl.textContent = 'イベントは検出されませんでした。パラメータを少し緩めると出てくるかもしれません。';
+        return;
+      }
+
+      const lines = events.map((e, i) => {
+        const label = e.type === 'LOUD_START'
+          ? 'うるさくなり始め 食べてOK！'
+          : '静かになり始め 食べるのストップ！';
+        return `  ${e.time} 秒: ${label}`;
+      });
+
+      outputEl.textContent = lines.join('\n');
+    }
+
+    // トレーを回す
+    async function turnTray(event, pwm){
+      // 回転方向の設定
+      if(event.type === 'LOUD_START'){
+        // Direction
+        obniz.io0.output(true);
+      } else if(event.type === 'QUIET_START'){
+        // Direction
+        obniz.io0.output(false);
+      }
+
+      pwm.start({io: 1});
+      pwm.freq(300);
+      pwm.duty(20);
+
+      await obniz.wait(1500);
+      await pwm.end();
+    }
+  </script>
+
+  </body>
+</html>
