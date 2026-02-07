@@ -25,8 +25,8 @@
 
   <!-- 動画をupしたらここに表示する -->
   <div id="video-container" class="mt-4 ms-4" style="visibility: hidden;">
-    <video src="" width="1280px" controls></video>
-    <canvas id="roudness-graph" width="1280px" height="120px" style="display: block;"></canvas>
+    <video src="" width="1280" controls></video>
+    <canvas id="roudness-graph" width="1280" height="120" style="display: block;"></canvas>
   </div>
 
   <!-- 結果表示 -->
@@ -45,6 +45,7 @@
     const videoEl               = document.querySelector('video');
     const resutlEl              = document.getElementById('result');
     const videoContainerEL      = document.getElementById('video-container');
+    const graphCanvas           = document.getElementById('roudness-graph');
 
     let decodedBuffer = null;
 
@@ -104,6 +105,19 @@
 
         // 解析本体
         const result = analyzeLoudness(decodedBuffer);
+
+        const bars = buildBarsFromSmoothDb(
+          result.smoothDb,
+          result.dt,
+          durationSec,
+          graphCanvas.width,
+          -60,
+          0
+        );
+
+        graph.setBars(bars, durationSec);
+        graph.drawAt(0);
+
         showEvents(result.events);
         turnTimings =  [...result.events];
 
@@ -119,6 +133,15 @@
         analyzeButton.disabled = false;
       }
     });
+
+    // グラフ表示用 イベント追加等
+    const graph = createDbGraph(graphCanvas, { dbMin: -60, dbMax: 0 });
+    graph.bindCurrentTime(() => videoEl.currentTime);
+
+    videoEl.addEventListener("play", () => graph.start());
+    videoEl.addEventListener("pause", () => graph.stop());
+    videoEl.addEventListener("ended", () => graph.stop());
+    videoEl.addEventListener("seeked", () => graph.drawAt(videoEl.currentTime));
 
     // obniz接続時のみ回転
     obniz.onconnect = async () => {
@@ -383,6 +406,115 @@
       await obniz.wait(1500);
       await pwm.end();
     }
+
+    // グラフ表示用 音声配列変換
+    // 動画の長さ/グラフの横幅 をしたときの1px分のY座標の位置を計算
+    function buildBarsFromSmoothDb(smoothDb, dtSec, durationSec, width, dbMin, dbMax) {
+      const out = new Float32Array(width);
+      const secPerPx = durationSec / width;
+
+      for (let x = 0; x < width; x++) {
+        const t0 = x * secPerPx;
+        const t1 = (x + 1) * secPerPx;
+
+        const i0 = Math.max(0, Math.floor(t0 / dtSec));
+        const i1 = Math.min(smoothDb.length - 1, Math.ceil(t1 / dtSec));
+
+        // 1px分の範囲内の最大値を取る(うるさくなり始めを目立たせたい)
+        let m = dbMin;
+        for (let i = i0; i <= i1; i++) {
+          m = Math.max(m, smoothDb[i]);
+        }
+        if (m > dbMax) m = dbMax;
+
+        out[x] = m;
+      }
+
+      return out;
+    }
+
+    // グラフ表示
+    function createDbGraph(canvas, {
+      dbMin = -60,
+      dbMax = 0,
+      bg = "black",
+      bar = "rgba(255,255,255,0.35)",
+      line = "red",
+    } = {}) {
+      const ctx = canvas.getContext("2d");
+
+      let bars = null;
+      let durationSec = null;
+      let rafId = null;
+      let getCurrentTime = null; // video.currentTime を取る関数
+
+      function dbToY(db, H) {
+        const clamped = Math.max(dbMin, Math.min(dbMax, db));
+        const p = (clamped - dbMin) / (dbMax - dbMin); // 0..1
+        return H * (1 - p);
+      }
+
+      function setBars(nextBars, nextDurationSec) {
+        bars = nextBars;
+        durationSec = nextDurationSec;
+      }
+
+      function drawAt(currentTimeSec) {
+        const W = canvas.width;
+        const H = canvas.height;
+
+        // 背景
+        ctx.clearRect(0, 0, W, H);
+        ctx.fillStyle = bg;
+        ctx.fillRect(0, 0, W, H);
+
+        // 棒
+        if (bars) {
+          ctx.fillStyle = bar;
+          for (let x = 0; x < bars.length; x++) {
+            const y = dbToY(bars[x], H);
+            ctx.fillRect(x, y, 1, H - y);
+          }
+        }
+
+        // 赤線
+        if (durationSec && durationSec > 0) {
+          const ratio = currentTimeSec / durationSec;
+          const x = ratio * W;
+
+          ctx.strokeStyle = line;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(x, 0);
+          ctx.lineTo(x, H);
+          ctx.stroke();
+        }
+      }
+
+      function start() {
+        if (rafId) return;
+        const loop = () => {
+          if (getCurrentTime) drawAt(getCurrentTime());
+          rafId = requestAnimationFrame(loop);
+        };
+        rafId = requestAnimationFrame(loop);
+      }
+
+      function stop() {
+        if (!rafId) return;
+        cancelAnimationFrame(rafId);
+        rafId = null;
+        if (getCurrentTime) drawAt(getCurrentTime());
+      }
+
+      // video への密結合を避ける：videoそのものを渡さず「現在時刻を取る関数」だけ渡す
+      function bindCurrentTime(getter) {
+        getCurrentTime = getter;
+      }
+
+      return { setBars, drawAt, start, stop, bindCurrentTime };
+    }
+
   </script>
 
   </body>
