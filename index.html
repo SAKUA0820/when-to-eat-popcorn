@@ -106,6 +106,7 @@
         // 解析本体
         const result = analyzeLoudness(decodedBuffer);
 
+        // 音量グラフの表示
         const bars = buildBarsFromSmoothDb(
           result.smoothDb,
           result.dt,
@@ -114,10 +115,10 @@
           -60,
           0
         );
-
-        graph.setBars(bars, durationSec);
+        graph.setBars(bars, durationSec, result.events);
         graph.drawAt(0);
 
+        // 食べ始め・食べ終わりの結果表示
         showEvents(result.events);
         turnTimings =  [...result.events];
 
@@ -438,46 +439,80 @@
       dbMin = -60,
       dbMax = 0,
       bg = "black",
-      bar = "rgba(255,255,255,0.35)",
       line = "red",
+      quietBarFill = "rgba(255,255,255,0.35)",
+      loudBarFill  = "rgba(120,255,160,0.35)",
     } = {}) {
       const ctx = canvas.getContext("2d");
 
+      // うるさいとき(=ポップコーン食べられる)のグラフの色と、そうでないときのグラフの色の定義
+      const Section = {
+        QUIET: { key: "QUIET", barFill: quietBarFill },
+        LOUD:  { key: "LOUD",  barFill: loudBarFill  },
+      };
+
       let bars = null;
       let durationSec = null;
+      let eventsSorted = [];
+
       let rafId = null;
-      let getCurrentTime = null; // video.currentTime を取る関数
+      let getCurrentTime = null;
 
       function dbToY(db, H) {
         const clamped = Math.max(dbMin, Math.min(dbMax, db));
-        const p = (clamped - dbMin) / (dbMax - dbMin); // 0..1
+        const p = (clamped - dbMin) / (dbMax - dbMin);
         return H * (1 - p);
       }
 
-      function setBars(nextBars, nextDurationSec) {
+      function setBars(nextBars, nextDurationSec, nextEvents = []) {
         bars = nextBars;
         durationSec = nextDurationSec;
+
+        eventsSorted = Array.isArray(nextEvents)
+          ? [...nextEvents].sort((a, b) => a.time - b.time)
+          : [];
       }
 
       function drawAt(currentTimeSec) {
         const W = canvas.width;
         const H = canvas.height;
 
-        // 背景
         ctx.clearRect(0, 0, W, H);
         ctx.fillStyle = bg;
         ctx.fillRect(0, 0, W, H);
 
-        // 棒
-        if (bars) {
-          ctx.fillStyle = bar;
+        if (bars && durationSec && durationSec > 0) {
+          const secPerPx = durationSec / W;
+
+          let section = (eventsSorted.length > 0 && eventsSorted[0].type === "QUIET_START")
+            ? Section.LOUD
+            : Section.QUIET;
+
+          let idx = 0;
+
+          for (let x = 0; x < bars.length; x++) {
+            const tMid = (x + 0.5) * secPerPx;
+
+            while (idx < eventsSorted.length && eventsSorted[idx].time <= tMid) {
+              if (eventsSorted[idx].type === "LOUD_START") section = Section.LOUD;
+              else if (eventsSorted[idx].type === "QUIET_START") section = Section.QUIET;
+              idx++;
+            }
+
+            const y = dbToY(bars[x], H);
+            ctx.fillStyle = section.barFill;
+            ctx.fillRect(x, y, 1, H - y);
+          }
+        } else if (bars) {
+          // durationが無い場合はデフォルト色で描く
+          ctx.fillStyle = Section.QUIET.barFill;
           for (let x = 0; x < bars.length; x++) {
             const y = dbToY(bars[x], H);
             ctx.fillRect(x, y, 1, H - y);
           }
         }
 
-        // 赤線
+        // 再生位置の赤線
         if (durationSec && durationSec > 0) {
           const ratio = currentTimeSec / durationSec;
           const x = ratio * W;
@@ -507,7 +542,6 @@
         if (getCurrentTime) drawAt(getCurrentTime());
       }
 
-      // video への密結合を避ける：videoそのものを渡さず「現在時刻を取る関数」だけ渡す
       function bindCurrentTime(getter) {
         getCurrentTime = getter;
       }
