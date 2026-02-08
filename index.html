@@ -7,7 +7,7 @@
     <link rel="stylesheet" href="/css/starter-sample.css" />
     <script src="https://code.jquery.com/jquery-3.2.1.min.js"></script>
     <script
-      src="https://unpkg.com/obniz@4.0.0/obniz.js"
+      src="https://unpkg.com/obniz@3.0.0/obniz.js"
       crossorigin="anonymous"
     ></script>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js" integrity="sha384-geWF76RCwLtnZ8qwWowPQNguL3RmwHVBC9FhGdlKrxdiJJigb/j/68SIy3Te4Bkz" crossorigin="anonymous"></script>
@@ -24,9 +24,9 @@
 
 
   <!-- 動画をupしたらここに表示する -->
-  <div class="mt-4 ms-4">
-    <video src="" width="1280px" controls style="visibility: hidden;"></video>
-    <canvas id="roudness-graph" width="1280px" height="120px" style="backgroud: black;">></canvas>
+  <div id="video-container" class="mt-4 ms-4" style="visibility: hidden;">
+    <video src="" width="1280" controls></video>
+    <canvas id="roudness-graph" width="1280" height="120" style="display: block;"></canvas>
   </div>
 
   <!-- 結果表示 -->
@@ -38,14 +38,15 @@
   <script>
     const obniz = new Obniz("OBNIZ_ID_HERE");
 
-    const fileInput     = document.getElementById('fileInput');
-    const analyzeButton = document.getElementById('analyzeButton');
-    const statusEl      = document.getElementById('status');
-    const outputEl      = document.getElementById('output');
-    const videoEl       = document.querySelector('video');
-    const resutlEl      = document.getElementById('result');
+    const fileInput             = document.getElementById('fileInput');
+    const analyzeButton         = document.getElementById('analyzeButton');
+    const statusEl              = document.getElementById('status');
+    const outputEl              = document.getElementById('output');
+    const videoEl               = document.querySelector('video');
+    const resutlEl              = document.getElementById('result');
+    const videoContainerEL      = document.getElementById('video-container');
+    const graphCanvas           = document.getElementById('roudness-graph');
 
-    let audioContext = null;
     let decodedBuffer = null;
 
     let turnTimings = [];   // トレーを回転するタイミングの配列
@@ -89,10 +90,8 @@
         const arrayBuffer = await file.arrayBuffer();
 
         // AudioContext の初期化
-        if (!audioContext) {
-          const AC = window.AudioContext || window.webkitAudioContext;
-          audioContext = new AC({ sampleRate: 44100 });
-        }
+        const AC = window.AudioContext || window.webkitAudioContext;
+        const audioContext = new AC();
 
         // 音声デコード
         decodedBuffer = await decodeAudio(arrayBuffer, audioContext);
@@ -101,15 +100,32 @@
           `音声をデコードしました: ${decodedBuffer.sampleRate} Hz, ` +
           `${decodedBuffer.numberOfChannels} ch, 長さ ${durationSec.toFixed(1)} 秒。解析中...`;
 
+        // AudioContextのクローズ
+        await audioContext.close();
+
         // 解析本体
         const result = analyzeLoudness(decodedBuffer);
+
+        // 音量グラフの表示
+        const bars = buildBarsFromSmoothDb(
+          result.smoothDb,
+          result.dt,
+          durationSec,
+          graphCanvas.width,
+          -60,
+          0
+        );
+        graph.setBars(bars, durationSec, result.events);
+        graph.drawAt(0);
+
+        // 食べ始め・食べ終わりの結果表示
         showEvents(result.events);
         turnTimings =  [...result.events];
 
         statusEl.textContent =
           '解析完了！';
         analyzeButton.disabled = false;
-        videoEl.style.visibility = "visible";
+        videoContainerEL.style.visibility = "visible";
         resutlEl.style.visibility = "visible";
       } catch (e) {
         console.error(e);
@@ -118,6 +134,15 @@
         analyzeButton.disabled = false;
       }
     });
+
+    // グラフ表示用 イベント追加等
+    const graph = createDbGraph(graphCanvas, { dbMin: -60, dbMax: 0 });
+    graph.bindCurrentTime(() => videoEl.currentTime);
+
+    videoEl.addEventListener("play", () => graph.start());
+    videoEl.addEventListener("pause", () => graph.stop());
+    videoEl.addEventListener("ended", () => graph.stop());
+    videoEl.addEventListener("seeked", () => graph.drawAt(videoEl.currentTime));
 
     // obniz接続時のみ回転
     obniz.onconnect = async () => {
@@ -128,9 +153,10 @@
 
       // 動画の再生時間が変化したとき
       videoEl.addEventListener('timeupdate', async() => {
+        console.log('再生時間が変化しました');
         let currentTimeInteger = Math.round(videoEl.currentTime);
 
-        // 音量変化がない動画の場合はこの関数は通らない(再生開始後のみに限定)
+        // 音量変化がない動画の場合はreturn
         if (currentTimeInteger && !turnTimings?.length) {
           statusEl.textContent =
             '全体的に音量に変化がないか、解析が失敗している可能性があります。';
@@ -253,10 +279,16 @@
     function rmsToDb(rmsArray) {
       const EPS = 1e-12;
       let maxRms = 0;
+
+      // RMSの最大値を探す
       for (const r of rmsArray) {
-        if (r > maxRms) maxRms = r;
+        if (r > maxRms) {
+          maxRms = r;
+        }
       }
+      // 0を避けるために小さい値を足す
       const ref = maxRms + EPS;
+      // 各要素をRMS→dBに変換
       return rmsArray.map(r => 20 * Math.log10((r + EPS) / ref));
     }
 
@@ -375,6 +407,148 @@
       await obniz.wait(1500);
       await pwm.end();
     }
+
+    // グラフ表示用 音声配列変換
+    // 動画の長さ/グラフの横幅 をしたときの1px分のY座標の位置を計算
+    function buildBarsFromSmoothDb(smoothDb, dtSec, durationSec, width, dbMin, dbMax) {
+      const out = new Float32Array(width);
+      const secPerPx = durationSec / width;
+
+      for (let x = 0; x < width; x++) {
+        const t0 = x * secPerPx;
+        const t1 = (x + 1) * secPerPx;
+
+        const i0 = Math.max(0, Math.floor(t0 / dtSec));
+        const i1 = Math.min(smoothDb.length - 1, Math.ceil(t1 / dtSec));
+
+        // 1px分の範囲内の最大値を取る(うるさくなり始めを目立たせたい)
+        let m = dbMin;
+        for (let i = i0; i <= i1; i++) {
+          m = Math.max(m, smoothDb[i]);
+        }
+        if (m > dbMax) m = dbMax;
+
+        out[x] = m;
+      }
+
+      return out;
+    }
+
+    // グラフ表示
+    function createDbGraph(canvas, {
+      dbMin = -60,
+      dbMax = 0,
+      bg = "black",
+      line = "red",
+      quietBarFill = "rgba(255,255,255,0.35)",
+      loudBarFill  = "rgba(120,255,160,0.35)",
+    } = {}) {
+      const ctx = canvas.getContext("2d");
+
+      // うるさいとき(=ポップコーン食べられる)のグラフの色と、そうでないときのグラフの色の定義
+      const Section = {
+        QUIET: { key: "QUIET", barFill: quietBarFill },
+        LOUD:  { key: "LOUD",  barFill: loudBarFill  },
+      };
+
+      let bars = null;
+      let durationSec = null;
+      let eventsSorted = [];
+
+      let rafId = null;
+      let getCurrentTime = null;
+
+      function dbToY(db, H) {
+        const clamped = Math.max(dbMin, Math.min(dbMax, db));
+        const p = (clamped - dbMin) / (dbMax - dbMin);
+        return H * (1 - p);
+      }
+
+      function setBars(nextBars, nextDurationSec, nextEvents = []) {
+        bars = nextBars;
+        durationSec = nextDurationSec;
+
+        eventsSorted = Array.isArray(nextEvents)
+          ? [...nextEvents].sort((a, b) => a.time - b.time)
+          : [];
+      }
+
+      function drawAt(currentTimeSec) {
+        const W = canvas.width;
+        const H = canvas.height;
+
+        ctx.clearRect(0, 0, W, H);
+        ctx.fillStyle = bg;
+        ctx.fillRect(0, 0, W, H);
+
+        if (bars && durationSec && durationSec > 0) {
+          const secPerPx = durationSec / W;
+
+          let section = (eventsSorted.length > 0 && eventsSorted[0].type === "QUIET_START")
+            ? Section.LOUD
+            : Section.QUIET;
+
+          let idx = 0;
+
+          for (let x = 0; x < bars.length; x++) {
+            const tMid = (x + 0.5) * secPerPx;
+
+            while (idx < eventsSorted.length && eventsSorted[idx].time <= tMid) {
+              if (eventsSorted[idx].type === "LOUD_START") section = Section.LOUD;
+              else if (eventsSorted[idx].type === "QUIET_START") section = Section.QUIET;
+              idx++;
+            }
+
+            const y = dbToY(bars[x], H);
+            ctx.fillStyle = section.barFill;
+            ctx.fillRect(x, y, 1, H - y);
+          }
+        } else if (bars) {
+          // durationが無い場合はデフォルト色で描く
+          ctx.fillStyle = Section.QUIET.barFill;
+          for (let x = 0; x < bars.length; x++) {
+            const y = dbToY(bars[x], H);
+            ctx.fillRect(x, y, 1, H - y);
+          }
+        }
+
+        // 再生位置の赤線
+        if (durationSec && durationSec > 0) {
+          const ratio = currentTimeSec / durationSec;
+          const x = ratio * W;
+
+          ctx.strokeStyle = line;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(x, 0);
+          ctx.lineTo(x, H);
+          ctx.stroke();
+        }
+      }
+
+      function start() {
+        if (rafId) return;
+        const loop = () => {
+          if (getCurrentTime) drawAt(getCurrentTime());
+          rafId = requestAnimationFrame(loop);
+        };
+        rafId = requestAnimationFrame(loop);
+      }
+
+      function stop() {
+        if (!rafId) return;
+        cancelAnimationFrame(rafId);
+        rafId = null;
+        if (getCurrentTime) drawAt(getCurrentTime());
+      }
+
+      function bindCurrentTime(getter) {
+        getCurrentTime = getter;
+      }
+
+      return { setBars, drawAt, start, stop, bindCurrentTime };
+    }
+
   </script>
 
   </body>
