@@ -17,7 +17,7 @@
 
   <!-- ファイル入力とボタン -->
   <div>
-    <p id="status" class="mt-4 ms-4">動画ファイルを選択してください（mp4推奨）</p>
+    <p id="status" class="mt-4 ms-4">動画ファイルを選択 or グレーのエリアにドラッグ&ドロップしてください（mp4推奨）</p>
     <input id="fileInput" type="file" accept="audio/*,video/*" class="ms-4"><br>
     <button id="analyzeButton" class="btn btn-primary mt-4 ms-4" disabled>ポップコーンの食べどきを探す</button>
   </div>
@@ -44,7 +44,7 @@
     const outputEl              = document.getElementById('output');
     const videoEl               = document.querySelector('video');
     const resutlEl              = document.getElementById('result');
-    const videoContainerEL      = document.getElementById('video-container');
+    const videoContainerEl      = document.getElementById('video-container');
     const graphCanvas           = document.getElementById('roudness-graph');
 
     let decodedBuffer = null;
@@ -125,7 +125,7 @@
         statusEl.textContent =
           '解析完了！';
         analyzeButton.disabled = false;
-        videoContainerEL.style.visibility = "visible";
+        videoContainerEl.style.visibility = "visible";
         resutlEl.style.visibility = "visible";
       } catch (e) {
         console.error(e);
