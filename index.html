@@ -19,14 +19,17 @@
   <div>
     <p id="status" class="mt-4 ms-4">動画ファイルを選択 or グレーのエリアにドラッグ&ドロップしてください（mp4推奨）</p>
     <input id="fileInput" type="file" accept="audio/*,video/*" class="ms-4"><br>
-    <button id="analyzeButton" class="btn btn-primary mt-4 ms-4" disabled>ポップコーンの食べどきを探す</button>
+    <button id="analyzeButton" class="btn btn-danger mt-4 ms-4" disabled>🍿ポップコーンの食べどきを探す🍿</button>
+    <button id="playButton" class="btn btn-success mt-4 ms-2" disabled>再生</button>
+    <button id="rewindButton" class="btn btn-secondary mt-4 ms-2" disabled>最初から</button>
+    <button id="topButton" class="btn btn-dark mt-4 ms-2">動画を変える</button>
   </div>
 
 
   <!-- 動画をupしたらここに表示する -->
   <div id="video-container" class="mt-4 ms-4" style="visibility: hidden;">
-    <video src="" width="1280" controls></video>
-    <canvas id="roudness-graph" width="1280" height="120" style="display: block;"></canvas>
+    <video src="" width="1280"></video>
+    <canvas id="roudness-graph" width="1280" height="60" style="display: block;"></canvas>
   </div>
 
   <!-- 結果表示 -->
@@ -40,6 +43,8 @@
 
     const fileInput             = document.getElementById('fileInput');
     const analyzeButton         = document.getElementById('analyzeButton');
+    const playButton            = document.getElementById('playButton');
+    const rewindButton            = document.getElementById('rewindButton');
     const statusEl              = document.getElementById('status');
     const outputEl              = document.getElementById('output');
     const videoEl               = document.querySelector('video');
@@ -57,8 +62,8 @@
     const SMOOTH_SEC     = 2.0;    // 2秒くらいでなめらかにする
     const RISE_DB_PER_S  = +1.0;   // これ以上の勢いで上がったら「うるさくなり始め」
     const FALL_DB_PER_S  = -1.0;   // これ以下の勢いで下がったら「静かになり始め」
-    const MIN_GAP_SEC    = 2.5;    // イベント同士の最小間隔
-    const LOUD_PREROLL_SEC    = 1.0;    // 音が大きくなってから何秒後に回転を始めるか
+    const MIN_GAP_SEC    = 6;    // イベント同士の最小間隔
+    const LOUD_PREROLL_SEC    = 0.5;    // 音が大きくなってから何秒後に回転を始めるか
     const QUIET_PREROLL_SEC   = 2.0;    // 音が小さくなる何秒前に回転を始めるか
 
     // ファイルを選んだら解析ボタンを有効にする
@@ -125,6 +130,8 @@
         statusEl.textContent =
           '解析完了！';
         analyzeButton.disabled = false;
+        playButton.disabled = false;
+        rewindButton.disabled = false;
         videoContainerEl.style.visibility = "visible";
         resutlEl.style.visibility = "visible";
       } catch (e) {
@@ -133,6 +140,47 @@
           'デコードに失敗しました。';
         analyzeButton.disabled = false;
       }
+    });
+
+    // 「再生 / 一時停止」を押したとき
+    playButton.addEventListener('click', async () => {
+      if(videoEl.paused){
+        // 再生する
+        videoEl.play();
+        playButton.textContent = '一時停止';
+      } else {
+        // 一時停止する
+        videoEl.pause();
+        playButton.textContent = '再生';
+      }
+    });
+    
+    // 「最初から」を押したとき
+    rewindButton.addEventListener('click', async () => {
+      // 再生秒数を戻す
+      videoEl.currentTime = 0;
+      // 過去のeventのリストをhaveUsedを戻す
+      turnTimings.forEach(item => {
+        item.haveUsed = false;
+      });
+    });
+
+    // 「動画を変える」を押したとき
+    topButton.addEventListener('click', async () => {
+      // 表示の初期化
+      analyzeButton.disabled = true;
+      playButton.disabled = true;
+      rewindButton.disabled = true;
+      statusEl.textContent = '動画ファイルを選択 or グレーのエリアにドラッグ&ドロップしてください（mp4推奨）';
+      outputEl.textContent = '';
+      videoContainerEl.style.visibility = "hidden";
+      resutlEl.style.visibility = "hidden";
+
+      // 変数の初期化
+      fileInput.value = '';
+      videoEl.src = '';
+      decodedBuffer = null;
+      turnTimings = [];
     });
 
     // グラフ表示用 イベント追加等
@@ -166,7 +214,6 @@
         // 動画の時刻と回転タイミングが一致した時トレーを回転させる
         turnTimings.forEach(item => {
           if(item.time <= currentTimeInteger && !item.haveUsed){
-            // TODO: itemの方向に回転させる
             console.log(`turn ${item.type}`);
             turnTray(item, pwm);
             item.haveUsed = true;
@@ -362,7 +409,7 @@
           // うるさい状態から、静かになり始めたか？
           if (level <= quietThreshold && slope <= fallThreshold) {
             const eventTime = Math.round(Math.max(0, t - QUIET_PREROLL_SEC));
-            events.push({ time: eventTime, type: 'QUIET_START', haveUsed: false});
+            events.push({ time: eventTime, type: 'QUIET_START', haveUsed: false });
             state = 'quiet';
             lastEventTime = t;
           }
