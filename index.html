@@ -3,12 +3,12 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>ポップコーン食べどき検出</title>
+    <title>シーンとしたシーンは待っトレー！</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-9ndCyUaIbzAi2FUVXJi0CjmCapSmO7SnpJef0486qhLnuZ2cdeRhO02iuK6FUUVM" crossorigin="anonymous">
     <style>
       html, body { height: 100%; }
       body { background: #0b0d12; }
-      #status { max-width: 420px; }
+      #status { max-width: 420px; font-size: .7rem; }
       .file-input { width: 230px; }
       .app-main { min-height: 0; }
 
@@ -33,21 +33,28 @@
         object-fit: contain;
       }
 
+      .video-control-button {
+        width: 42px;
+        height: 42px;
+        font-size: 20px;
+        line-height: 1;
+        backdrop-filter: blur(8px);
+      }
+
       .sound-overlay {
         position: absolute;
         right: 0;
         bottom: 0;
         left: 0;
-        padding-top: 24px;
+        padding-top: 37px;
         pointer-events: none;
-        background: linear-gradient(transparent, rgba(0, 0, 0, .8));
+        background: rgba(0, 0, 0, .68);
       }
 
       #loudness-graph {
         width: 100%;
         height: 72px;
         display: block;
-        opacity: .9;
       }
 
       .result-panel {
@@ -85,15 +92,13 @@
         <div class="d-flex align-items-center gap-2 flex-shrink-0">
           <span class="fs-3" aria-hidden="true">🍿</span>
           <div class="overflow-hidden">
-            <h1 class="h6 fw-bold mb-0">ポップコーン食べどき検出</h1>
-            <p id="status" class="small text-secondary text-truncate mb-0" aria-live="polite">動画ファイルを選択してください（MP4推奨）</p>
+            <h1 class="h5 fw-bold mb-0">シーンとしたシーンは待っトレー！</h1>
+            <p id="status" class="text-secondary text-truncate mb-0" aria-live="polite">動画ファイルを選択してください（MP4推奨）</p>
           </div>
         </div>
 
         <div class="d-flex gap-2 flex-nowrap overflow-auto ms-xl-auto" aria-label="動画操作">
           <button id="analyzeButton" class="btn btn-danger btn-sm flex-shrink-0 d-none" disabled>もう一度解析</button>
-          <button id="playButton" class="btn btn-success btn-sm flex-shrink-0" disabled>再生</button>
-          <button id="rewindButton" class="btn btn-secondary btn-sm flex-shrink-0" disabled>最初から</button>
           <button id="topButton" class="btn btn-outline-light btn-sm flex-shrink-0">動画を変える</button>
         </div>
       </div>
@@ -112,6 +117,16 @@
       <div id="video-container" class="video-stage rounded-4 border border-secondary border-opacity-25 shadow-lg d-none">
         <video playsinline></video>
 
+        <!-- 動画操作を左上にオーバーレイ -->
+        <div class="position-absolute top-0 start-0 z-3 d-flex gap-2 m-3">
+          <button id="playButton" class="video-control-button btn btn-dark bg-opacity-75 rounded-circle d-flex align-items-center justify-content-center" type="button" aria-label="再生" title="再生" disabled>
+            <span id="playButtonIcon" aria-hidden="true">▶</span>
+          </button>
+          <button id="rewindButton" class="video-control-button btn btn-dark bg-opacity-75 rounded-circle d-flex align-items-center justify-content-center" type="button" aria-label="最初から" title="最初から" disabled>
+            <span aria-hidden="true">↺</span>
+          </button>
+        </div>
+
         <!-- 解析中表示 -->
         <div id="analysis-loading" class="position-absolute top-50 start-50 translate-middle z-3 text-center bg-dark bg-opacity-75 rounded-3 p-3 d-none" aria-live="polite">
           <div class="spinner-border spinner-border-sm text-warning mb-2" role="status"></div>
@@ -126,9 +141,8 @@
 
         <!-- 音量グラフを動画下部にオーバーレイ -->
         <div class="sound-overlay">
-          <div class="position-absolute top-0 start-0 w-100 d-flex justify-content-between px-3 small text-white-50">
-            <span>音量と食べどき</span>
-            <span>● ストップ　<span class="text-success">● 食べてOK</span></span>
+          <div class="position-absolute top-0 start-0 w-100 px-3 py-2 small text-white">
+            <span>● 我慢しよう...  <span class="text-success">● 食べてOK</span></span>
           </div>
           <canvas id="loudness-graph" width="1280" height="72"></canvas>
         </div>
@@ -141,6 +155,7 @@
     const fileInput             = document.getElementById('fileInput');
     const analyzeButton         = document.getElementById('analyzeButton');
     const playButton            = document.getElementById('playButton');
+    const playButtonIcon        = document.getElementById('playButtonIcon');
     const rewindButton          = document.getElementById('rewindButton');
     const topButton             = document.getElementById('topButton');
     const statusEl              = document.getElementById('status');
@@ -243,7 +258,7 @@
       analyzeButton.classList.add('d-none');
       playButton.disabled = true;
       rewindButton.disabled = true;
-      playButton.textContent = '再生';
+      setPlayButtonState(false);
       statusEl.textContent = `${file.name} が選択されました。サイズ ${(file.size / 1024 / 1024).toFixed(1)} MB`;
       outputEl.textContent = '';
       decodedBuffer = null;
@@ -359,20 +374,25 @@
       if(videoEl.paused){
         // 再生する
         videoEl.play();
-        playButton.textContent = '一時停止';
       } else {
         // 一時停止する
         videoEl.pause();
-        playButton.textContent = '再生';
       }
     });
+
+    function setPlayButtonState(isPlaying) {
+      const label = isPlaying ? '一時停止' : '再生';
+      playButtonIcon.textContent = isPlaying ? 'Ⅱ' : '▶';
+      playButton.setAttribute('aria-label', label);
+      playButton.title = label;
+    }
     
     // 「最初から」を押したとき
     rewindButton.addEventListener('click', async () => {
       // 再生を止めて、再生秒数を戻す
       videoEl.pause();
       videoEl.currentTime = 0;
-      playButton.textContent = '再生';
+      setPlayButtonState(false);
       // 過去のeventのリストをhaveUsedを戻す
       turnTimings.forEach(item => {
         item.haveUsed = false;
@@ -398,7 +418,7 @@
 
       // 変数の初期化
       videoEl.pause();
-      playButton.textContent = '再生';
+      setPlayButtonState(false);
       fileInput.value = '';
       selectedFile = null;
       if (videoObjectUrl) {
@@ -415,9 +435,18 @@
     const graph = createDbGraph(graphCanvas, { dbMin: -60, dbMax: 0 });
     graph.bindCurrentTime(() => videoEl.currentTime);
 
-    videoEl.addEventListener("play", () => graph.start());
-    videoEl.addEventListener("pause", () => graph.stop());
-    videoEl.addEventListener("ended", () => graph.stop());
+    videoEl.addEventListener("play", () => {
+      graph.start();
+      setPlayButtonState(true);
+    });
+    videoEl.addEventListener("pause", () => {
+      graph.stop();
+      setPlayButtonState(false);
+    });
+    videoEl.addEventListener("ended", () => {
+      graph.stop();
+      setPlayButtonState(false);
+    });
     videoEl.addEventListener("seeked", () => graph.drawAt(videoEl.currentTime));
 
     // obniz接続時のみ回転
@@ -713,7 +742,7 @@
     function createDbGraph(canvas, {
       dbMin = -60,
       dbMax = 0,
-      bg = "rgba(4, 7, 12, 0.68)",
+      bg = "transparent",
       line = "red",
       quietBarFill = "rgba(255,255,255,0.35)",
       loudBarFill  = "rgba(120,255,160,0.35)",
@@ -729,6 +758,8 @@
       let bars = null;
       let durationSec = null;
       let eventsSorted = [];
+      let loudRanges = [];
+      let quietRanges = [];
 
       let rafId = null;
       let getCurrentTime = null;
@@ -746,6 +777,42 @@
         eventsSorted = Array.isArray(nextEvents)
           ? [...nextEvents].sort((a, b) => a.time - b.time)
           : [];
+
+        // 緑色になる各区間の開始・終了時刻を作る
+        loudRanges = [];
+        quietRanges = [];
+        if (!durationSec) return;
+
+        if (eventsSorted.length > 0) {
+          let loudStart = eventsSorted[0].type === "QUIET_START" ? 0 : null;
+
+          for (const event of eventsSorted) {
+            const time = Math.max(0, Math.min(durationSec, event.time));
+
+            if (event.type === "LOUD_START" && loudStart === null) {
+              loudStart = time;
+            } else if (event.type === "QUIET_START" && loudStart !== null) {
+              if (time > loudStart) loudRanges.push({ start: loudStart, end: time });
+              loudStart = null;
+            }
+          }
+
+          if (loudStart !== null && durationSec > loudStart) {
+            loudRanges.push({ start: loudStart, end: durationSec });
+          }
+        }
+
+        // 緑色以外の範囲を白色の区間として作る
+        let quietStart = 0;
+        for (const range of loudRanges) {
+          if (range.start > quietStart) {
+            quietRanges.push({ start: quietStart, end: range.start });
+          }
+          quietStart = Math.max(quietStart, range.end);
+        }
+        if (quietStart < durationSec) {
+          quietRanges.push({ start: quietStart, end: durationSec });
+        }
       }
 
       function drawAt(currentTimeSec) {
@@ -785,6 +852,43 @@
             const y = dbToY(bars[x], H);
             ctx.fillRect(x, y, 1, H - y);
           }
+        }
+
+        // 各区間の中央に、不透明な絵文字を1つ表示
+        if (durationSec && durationSec > 0) {
+          ctx.save();
+          ctx.globalAlpha = 1;
+          ctx.fillStyle = "#fff";
+          ctx.font = '22px "Apple Color Emoji", "Segoe UI Emoji", sans-serif';
+          ctx.textAlign = "center";
+          ctx.textBaseline = "alphabetic";
+          const markerY = H / 2 + 6;
+
+          // 絵文字ごとの上下余白を補正し、見た目の中心を揃える
+          function getBaselineOffset(emoji) {
+            const metrics = ctx.measureText(emoji);
+            const ascent = metrics.actualBoundingBoxAscent || 0;
+            const descent = metrics.actualBoundingBoxDescent || 0;
+            return (ascent - descent) / 2;
+          }
+
+          for (const range of quietRanges) {
+            const centerTime = (range.start + range.end) / 2;
+            const x = (centerTime / durationSec) * W;
+            ctx.fillText("🤫", x, markerY + getBaselineOffset("🤫"));
+          }
+
+          for (const range of loudRanges) {
+            const centerTime = (range.start + range.end) / 2;
+            const x = (centerTime / durationSec) * W;
+            ctx.save();
+            ctx.translate(x, markerY);
+            ctx.rotate(Math.PI / 6);
+            ctx.fillText("🍿", 0, getBaselineOffset("🍿"));
+            ctx.restore();
+          }
+
+          ctx.restore();
         }
 
         // 再生位置の赤線
