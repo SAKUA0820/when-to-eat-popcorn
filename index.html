@@ -12,6 +12,13 @@
       .file-input { width: 230px; }
       .app-main { min-height: 0; }
 
+      .drop-zone { transition: border-color .15s, box-shadow .15s; }
+      .app-main.drag-over .drop-zone,
+      .app-main.drag-over .video-stage {
+        border-color: #ffc107 !important;
+        box-shadow: 0 0 0 .25rem rgba(255, 193, 7, .25) !important;
+      }
+
       .video-stage {
         position: relative;
         width: min(1280px, calc(100vw - 2rem), calc((100dvh - 110px) * 1.7778));
@@ -36,7 +43,7 @@
         background: linear-gradient(transparent, rgba(0, 0, 0, .8));
       }
 
-      #roudness-graph {
+      #loudness-graph {
         width: 100%;
         height: 72px;
         display: block;
@@ -84,8 +91,7 @@
         </div>
 
         <div class="d-flex gap-2 flex-nowrap overflow-auto ms-xl-auto" aria-label="動画操作">
-          <input id="fileInput" class="form-control form-control-sm file-input flex-shrink-0" type="file" accept="audio/*,video/*" aria-label="動画を選ぶ">
-          <button id="analyzeButton" class="btn btn-danger btn-sm flex-shrink-0" disabled>🍿 食べどきを探す</button>
+          <button id="analyzeButton" class="btn btn-danger btn-sm flex-shrink-0 d-none" disabled>もう一度解析</button>
           <button id="playButton" class="btn btn-success btn-sm flex-shrink-0" disabled>再生</button>
           <button id="rewindButton" class="btn btn-secondary btn-sm flex-shrink-0" disabled>最初から</button>
           <button id="topButton" class="btn btn-outline-light btn-sm flex-shrink-0">動画を変える</button>
@@ -93,16 +99,24 @@
       </div>
     </header>
 
-    <main class="app-main flex-grow-1 d-flex align-items-center justify-content-center p-3 overflow-hidden">
-      <div id="empty-state" class="text-center text-secondary border border-secondary border-opacity-25 rounded-4 p-5">
+    <main id="app-main" class="app-main flex-grow-1 d-flex align-items-center justify-content-center p-3 overflow-hidden">
+      <div id="empty-state" class="drop-zone text-center text-secondary border border-secondary border-opacity-25 rounded-4 p-5 d-flex flex-column align-items-center">
         <span class="fs-1 d-block mb-2" aria-hidden="true">🎬</span>
         <strong class="text-white d-block mb-1">映画をセットしてください</strong>
-        トップバーから動画ファイルを読み込めます。
+        <span class="d-block">ここに動画ファイルをドラッグ＆ドロップ</span>
+        <small>または下のボタンから選択できます</small>
+        <input id="fileInput" class="form-control form-control-sm file-input mt-3" type="file" accept="audio/*,video/*" aria-label="動画を選ぶ">
       </div>
 
       <!-- 動画をアップしたら中央に表示する -->
       <div id="video-container" class="video-stage rounded-4 border border-secondary border-opacity-25 shadow-lg d-none">
         <video playsinline></video>
+
+        <!-- 解析中表示 -->
+        <div id="analysis-loading" class="position-absolute top-50 start-50 translate-middle z-3 text-center bg-dark bg-opacity-75 rounded-3 p-3 d-none" aria-live="polite">
+          <div class="spinner-border spinner-border-sm text-warning mb-2" role="status"></div>
+          <div class="small">食べどきを解析中…</div>
+        </div>
 
         <!-- 検出結果を動画上にコンパクトに表示 -->
         <div id="result" class="result-panel position-absolute top-0 end-0 m-3 p-3 rounded-3 bg-dark bg-opacity-75 overflow-auto d-none">
@@ -116,7 +130,7 @@
             <span>音量と食べどき</span>
             <span>● ストップ　<span class="text-success">● 食べてOK</span></span>
           </div>
-          <canvas id="roudness-graph" width="1280" height="72"></canvas>
+          <canvas id="loudness-graph" width="1280" height="72"></canvas>
         </div>
       </div>
     </main>
@@ -133,11 +147,16 @@
     const outputEl              = document.getElementById('output');
     const videoEl               = document.querySelector('video');
     const resultEl              = document.getElementById('result');
+    const analysisLoadingEl     = document.getElementById('analysis-loading');
     const videoContainerEl      = document.getElementById('video-container');
     const emptyStateEl          = document.getElementById('empty-state');
-    const graphCanvas           = document.getElementById('roudness-graph');
+    const appMainEl             = document.getElementById('app-main');
+    const graphCanvas           = document.getElementById('loudness-graph');
 
     let decodedBuffer = null;
+    let selectedFile = null;
+    let videoObjectUrl = null;
+    let analysisVersion = 0;
 
     let turnTimings = [];   // トレーを回転するタイミングの配列
 
@@ -151,50 +170,144 @@
     const LOUD_PREROLL_SEC    = 0.5;    // 音が大きくなってから何秒後に回転を始めるか
     const QUIET_PREROLL_SEC   = 2.0;    // 音が小さくなる何秒前に回転を始めるか
 
-    // ファイルを選んだら解析ボタンを有効にする
+    // ファイルを選んだら自動で解析する
     fileInput.addEventListener('change', () => {
-      const file = fileInput.files?.[0];
-      if (file) {
-        analyzeButton.disabled = false;
-        statusEl.textContent = `${file.name} が選択されました。サイズ ${(file.size / 1024 / 1024).toFixed(1)} MB`;
-
-        // Blobでページに動画を埋め込む
-        let URL = window.URL || window.webkitURL;
-        videoEl.src = URL.createObjectURL(file);
-      } else {
-        analyzeButton.disabled = true;
-        statusEl.textContent = '音声ファイルを選んでください';
-      }
-      outputEl.textContent = '';
+      selectVideoFile(fileInput.files?.[0]);
     });
 
-    // 「解析する」を押したとき
-    analyzeButton.addEventListener('click', async () => {
-      const file = fileInput.files?.[0];
+    // トップバー以外を動画ファイルのドロップ領域にする
+    let dragDepth = 0;
+
+    document.addEventListener('dragover', event => event.preventDefault());
+    document.addEventListener('drop', event => event.preventDefault());
+
+    appMainEl.addEventListener('dragenter', event => {
+      if (!Array.from(event.dataTransfer?.types || []).includes('Files')) return;
+      event.preventDefault();
+      dragDepth++;
+      appMainEl.classList.add('drag-over');
+    });
+
+    appMainEl.addEventListener('dragover', event => {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'copy';
+    });
+
+    appMainEl.addEventListener('dragleave', () => {
+      dragDepth--;
+      if (dragDepth <= 0) {
+        dragDepth = 0;
+        appMainEl.classList.remove('drag-over');
+      }
+    });
+
+    appMainEl.addEventListener('drop', event => {
+      event.preventDefault();
+      dragDepth = 0;
+      appMainEl.classList.remove('drag-over');
+
+      const file = event.dataTransfer?.files?.[0];
+      if (!selectVideoFile(file)) return;
+
+      // ファイル入力にもドロップしたファイル名を反映する
+      try {
+        const transfer = new DataTransfer();
+        transfer.items.add(file);
+        fileInput.files = transfer.files;
+      } catch (e) {
+        // FileListを設定できないブラウザでも、動画の読み込み自体は継続する
+      }
+    });
+
+    function selectVideoFile(file) {
+      // 進行中の古い解析結果を無効にする
+      analysisVersion++;
+      analysisLoadingEl.classList.add('d-none');
+
+      if (!file) {
+        selectedFile = null;
+        analyzeButton.disabled = true;
+        statusEl.textContent = '動画ファイルを選択してください（MP4推奨）';
+        return false;
+      }
+
+      if (!file.type.startsWith('video/') && !file.type.startsWith('audio/')) {
+        selectedFile = null;
+        analyzeButton.disabled = true;
+        statusEl.textContent = '動画または音声ファイルを選択してください。';
+        return false;
+      }
+
+      selectedFile = file;
+      analyzeButton.disabled = true;
+      analyzeButton.classList.add('d-none');
+      playButton.disabled = true;
+      rewindButton.disabled = true;
+      playButton.textContent = '再生';
+      statusEl.textContent = `${file.name} が選択されました。サイズ ${(file.size / 1024 / 1024).toFixed(1)} MB`;
+      outputEl.textContent = '';
+      decodedBuffer = null;
+      turnTimings = [];
+
+      videoEl.pause();
+      videoContainerEl.classList.remove('d-none');
+      analysisLoadingEl.classList.remove('d-none');
+      resultEl.classList.add('d-none');
+      emptyStateEl.classList.add('d-none');
+      graph.setBars(null, null, []);
+      graph.drawAt(0);
+
+      const URL = window.URL || window.webkitURL;
+      if (videoObjectUrl) URL.revokeObjectURL(videoObjectUrl);
+      videoObjectUrl = URL.createObjectURL(file);
+      videoEl.src = videoObjectUrl;
+      analyzeSelectedFile();
+      return true;
+    }
+
+    // 自動解析に失敗した場合のみ、ボタンから再解析する
+    analyzeButton.addEventListener('click', analyzeSelectedFile);
+
+    async function analyzeSelectedFile() {
+      const file = selectedFile;
       if (!file) return;
 
+      const currentVersion = ++analysisVersion;
       analyzeButton.disabled = true;
+      analyzeButton.classList.add('d-none');
+      playButton.disabled = true;
+      rewindButton.disabled = true;
+      analysisLoadingEl.classList.remove('d-none');
+      resultEl.classList.add('d-none');
       statusEl.textContent = 'ファイルを読み込み中...';
 
-      try {
-        const arrayBuffer = await file.arrayBuffer();
+      let audioContext = null;
 
+      try {
         // AudioContext の初期化
         const AC = window.AudioContext || window.webkitAudioContext;
-        const audioContext = new AC();
+        audioContext = new AC();
+
+        const arrayBuffer = await file.arrayBuffer();
+        if (currentVersion !== analysisVersion) return;
 
         // 音声デコード
-        decodedBuffer = await decodeAudio(arrayBuffer, audioContext);
-        const durationSec = decodedBuffer.length / decodedBuffer.sampleRate;
+        const nextDecodedBuffer = await decodeAudio(arrayBuffer, audioContext);
+        if (currentVersion !== analysisVersion) return;
+
+        decodedBuffer = nextDecodedBuffer;
+        const durationSec = nextDecodedBuffer.length / nextDecodedBuffer.sampleRate;
         statusEl.textContent =
-          `音声をデコードしました: ${decodedBuffer.sampleRate} Hz, ` +
-          `${decodedBuffer.numberOfChannels} ch, 長さ ${durationSec.toFixed(1)} 秒。解析中...`;
+          `音声をデコードしました: ${nextDecodedBuffer.sampleRate} Hz, ` +
+          `${nextDecodedBuffer.numberOfChannels} ch, 長さ ${durationSec.toFixed(1)} 秒。解析中...`;
 
         // AudioContextのクローズ
         await audioContext.close();
+        audioContext = null;
 
         // 解析本体
-        const result = analyzeLoudness(decodedBuffer);
+        const result = analyzeLoudness(nextDecodedBuffer);
+        if (currentVersion !== analysisVersion) return;
 
         // 音量グラフの表示
         const bars = buildBarsFromSmoothDb(
@@ -214,19 +327,32 @@
 
         statusEl.textContent =
           '解析完了！';
-        analyzeButton.disabled = false;
         playButton.disabled = false;
         rewindButton.disabled = false;
+        analysisLoadingEl.classList.add('d-none');
         videoContainerEl.classList.remove('d-none');
         resultEl.classList.remove('d-none');
         emptyStateEl.classList.add('d-none');
       } catch (e) {
+        if (currentVersion !== analysisVersion) return;
+
         console.error(e);
         statusEl.textContent =
-          'デコードに失敗しました。';
+          '解析に失敗しました。「もう一度解析」を押してください。';
+        analysisLoadingEl.classList.add('d-none');
+        analyzeButton.textContent = 'もう一度解析';
         analyzeButton.disabled = false;
+        analyzeButton.classList.remove('d-none');
+      } finally {
+        if (audioContext && audioContext.state !== 'closed') {
+          try {
+            await audioContext.close();
+          } catch (e) {
+            console.warn('AudioContextを終了できませんでした。', e);
+          }
+        }
       }
-    });
+    }
 
     // 「再生 / 一時停止」を押したとき
     playButton.addEventListener('click', async () => {
@@ -255,21 +381,32 @@
 
     // 「動画を変える」を押したとき
     topButton.addEventListener('click', async () => {
+      // 進行中の解析結果を無効にする
+      analysisVersion++;
+
       // 表示の初期化
       analyzeButton.disabled = true;
+      analyzeButton.classList.add('d-none');
       playButton.disabled = true;
       rewindButton.disabled = true;
       statusEl.textContent = '動画ファイルを選択してください（MP4推奨）';
       outputEl.textContent = '';
       videoContainerEl.classList.add('d-none');
       resultEl.classList.add('d-none');
+      analysisLoadingEl.classList.add('d-none');
       emptyStateEl.classList.remove('d-none');
 
       // 変数の初期化
       videoEl.pause();
       playButton.textContent = '再生';
       fileInput.value = '';
-      videoEl.src = '';
+      selectedFile = null;
+      if (videoObjectUrl) {
+        URL.revokeObjectURL(videoObjectUrl);
+        videoObjectUrl = null;
+      }
+      videoEl.removeAttribute('src');
+      videoEl.load();
       decodedBuffer = null;
       turnTimings = [];
     });
