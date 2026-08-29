@@ -1,10 +1,81 @@
-<html>
+<!DOCTYPE html>
+<html lang="ja">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>ポップコーン食べどき検出</title>
+    <title>シーンとしたシーンは待っトレー！</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-9ndCyUaIbzAi2FUVXJi0CjmCapSmO7SnpJef0486qhLnuZ2cdeRhO02iuK6FUUVM" crossorigin="anonymous">
-    <link rel="stylesheet" href="/css/starter-sample.css" />
+    <style>
+      html, body { height: 100%; }
+      body { background: #0b0d12; }
+      #status { max-width: 420px; font-size: .7rem; }
+      .file-input { width: 230px; }
+      .app-main { min-height: 0; }
+
+      .drop-zone { transition: border-color .15s, box-shadow .15s; }
+      .app-main.drag-over .drop-zone,
+      .app-main.drag-over .video-stage {
+        border-color: #ffc107 !important;
+        box-shadow: 0 0 0 .25rem rgba(255, 193, 7, .25) !important;
+      }
+
+      .video-stage {
+        position: relative;
+        width: min(1280px, calc(100vw - 2rem), calc((100dvh - 110px) * 1.7778));
+        aspect-ratio: 16 / 9;
+        overflow: hidden;
+        background: #000;
+      }
+
+      .video-stage video {
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+      }
+
+      .video-control-button {
+        width: 42px;
+        height: 42px;
+        font-size: 20px;
+        line-height: 1;
+        backdrop-filter: blur(8px);
+      }
+
+      .sound-overlay {
+        position: absolute;
+        right: 0;
+        bottom: 0;
+        left: 0;
+        padding-top: 37px;
+        pointer-events: none;
+        background: rgba(0, 0, 0, .68);
+      }
+
+      #loudness-graph {
+        width: 100%;
+        height: 72px;
+        display: block;
+      }
+
+      .result-panel {
+        z-index: 2;
+        width: min(330px, calc(100% - 2rem));
+        max-height: 42%;
+        backdrop-filter: blur(8px);
+      }
+
+      #output {
+        font-family: inherit;
+        font-size: 12px;
+        line-height: 1.6;
+        white-space: pre-wrap;
+      }
+
+      @media (max-width: 1199px) {
+        #status { max-width: calc(100vw - 80px); }
+        .video-stage { width: min(1280px, calc(100vw - 2rem), calc((100dvh - 150px) * 1.7778)); }
+      }
+    </style>
     <script src="https://code.jquery.com/jquery-3.2.1.min.js"></script>
     <script
       src="https://unpkg.com/obniz@3.0.0/obniz.js"
@@ -12,31 +83,71 @@
     ></script>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js" integrity="sha384-geWF76RCwLtnZ8qwWowPQNguL3RmwHVBC9FhGdlKrxdiJJigb/j/68SIy3Te4Bkz" crossorigin="anonymous"></script>
   </head>
-  <body>
+  <body class="vh-100 d-flex flex-column overflow-hidden text-white">
     <!-- <div id="obniz-debug"></div> -->
 
-  <!-- ファイル入力とボタン -->
-  <div>
-    <p id="status" class="mt-4 ms-4">動画ファイルを選択 or グレーのエリアにドラッグ&ドロップしてください（mp4推奨）</p>
-    <input id="fileInput" type="file" accept="audio/*,video/*" class="ms-4"><br>
-    <button id="analyzeButton" class="btn btn-danger mt-4 ms-4" disabled>🍿ポップコーンの食べどきを探す🍿</button>
-    <button id="playButton" class="btn btn-success mt-4 ms-2" disabled>再生</button>
-    <button id="rewindButton" class="btn btn-secondary mt-4 ms-2" disabled>最初から</button>
-    <button id="topButton" class="btn btn-dark mt-4 ms-2">動画を変える</button>
-  </div>
+    <!-- ファイル入力と操作ボタンをまとめたトップバー -->
+    <header class="navbar navbar-dark bg-black border-bottom flex-shrink-0 p-2">
+      <div class="container-fluid d-flex flex-column flex-xl-row align-items-stretch align-items-xl-center gap-2">
+        <div class="d-flex align-items-center gap-2 flex-shrink-0">
+          <span class="fs-3" aria-hidden="true">🍿</span>
+          <div class="overflow-hidden">
+            <h1 class="h5 fw-bold mb-0">シーンとしたシーンは待っトレー！</h1>
+            <p id="status" class="text-secondary text-truncate mb-0" aria-live="polite">動画ファイルを選択してください（MP4推奨）</p>
+          </div>
+        </div>
 
+        <div class="d-flex gap-2 flex-nowrap overflow-auto ms-xl-auto" aria-label="動画操作">
+          <button id="analyzeButton" class="btn btn-danger btn-sm flex-shrink-0 d-none" disabled>もう一度解析</button>
+          <button id="topButton" class="btn btn-outline-light btn-sm flex-shrink-0">動画を変える</button>
+        </div>
+      </div>
+    </header>
 
-  <!-- 動画をupしたらここに表示する -->
-  <div id="video-container" class="mt-4 ms-4" style="visibility: hidden;">
-    <video src="" width="1280"></video>
-    <canvas id="roudness-graph" width="1280" height="60" style="display: block;"></canvas>
-  </div>
+    <main id="app-main" class="app-main flex-grow-1 d-flex align-items-center justify-content-center p-3 overflow-hidden">
+      <div id="empty-state" class="drop-zone text-center text-secondary border border-secondary border-opacity-25 rounded-4 p-5 d-flex flex-column align-items-center">
+        <span class="fs-1 d-block mb-2" aria-hidden="true">🎬</span>
+        <strong class="text-white d-block mb-1">映画をセットしてください</strong>
+        <span class="d-block">ここに動画ファイルをドラッグ＆ドロップ</span>
+        <small>または下のボタンから選択できます</small>
+        <input id="fileInput" class="form-control form-control-sm file-input mt-3" type="file" accept="audio/*,video/*" aria-label="動画を選ぶ">
+      </div>
 
-  <!-- 結果表示 -->
-  <div id="result" class="ms-4 mt-4 mb-4" style="visibility: hidden;">
-    <p>検出結果</p>
-    <pre id="output""></pre>
-  </div>
+      <!-- 動画をアップしたら中央に表示する -->
+      <div id="video-container" class="video-stage rounded-4 border border-secondary border-opacity-25 shadow-lg d-none">
+        <video playsinline></video>
+
+        <!-- 動画操作を左上にオーバーレイ -->
+        <div class="position-absolute top-0 start-0 z-3 d-flex gap-2 m-3">
+          <button id="playButton" class="video-control-button btn btn-dark bg-opacity-75 rounded-circle d-flex align-items-center justify-content-center" type="button" aria-label="再生" title="再生" disabled>
+            <span id="playButtonIcon" aria-hidden="true">▶</span>
+          </button>
+          <button id="rewindButton" class="video-control-button btn btn-dark bg-opacity-75 rounded-circle d-flex align-items-center justify-content-center" type="button" aria-label="最初から" title="最初から" disabled>
+            <span aria-hidden="true">↺</span>
+          </button>
+        </div>
+
+        <!-- 解析中表示 -->
+        <div id="analysis-loading" class="position-absolute top-50 start-50 translate-middle z-3 text-center bg-dark bg-opacity-75 rounded-3 p-3 d-none" aria-live="polite">
+          <div class="spinner-border spinner-border-sm text-warning mb-2" role="status"></div>
+          <div class="small">食べどきを解析中…</div>
+        </div>
+
+        <!-- 検出結果を動画上にコンパクトに表示 -->
+        <div id="result" class="result-panel position-absolute top-0 end-0 m-3 p-3 rounded-3 bg-dark bg-opacity-75 overflow-auto d-none">
+          <p class="small fw-bold text-warning mb-1">検出結果</p>
+          <pre id="output" class="text-white mb-0"></pre>
+        </div>
+
+        <!-- 音量グラフを動画下部にオーバーレイ -->
+        <div class="sound-overlay">
+          <div class="position-absolute top-0 start-0 w-100 px-3 py-2 small text-white">
+            <span>● 我慢しよう...  <span class="text-success">● 食べてOK</span></span>
+          </div>
+          <canvas id="loudness-graph" width="1280" height="72"></canvas>
+        </div>
+      </div>
+    </main>
 
   <script>
     const obniz = new Obniz("OBNIZ_ID_HERE");
@@ -44,15 +155,23 @@
     const fileInput             = document.getElementById('fileInput');
     const analyzeButton         = document.getElementById('analyzeButton');
     const playButton            = document.getElementById('playButton');
-    const rewindButton            = document.getElementById('rewindButton');
+    const playButtonIcon        = document.getElementById('playButtonIcon');
+    const rewindButton          = document.getElementById('rewindButton');
+    const topButton             = document.getElementById('topButton');
     const statusEl              = document.getElementById('status');
     const outputEl              = document.getElementById('output');
     const videoEl               = document.querySelector('video');
-    const resutlEl              = document.getElementById('result');
+    const resultEl              = document.getElementById('result');
+    const analysisLoadingEl     = document.getElementById('analysis-loading');
     const videoContainerEl      = document.getElementById('video-container');
-    const graphCanvas           = document.getElementById('roudness-graph');
+    const emptyStateEl          = document.getElementById('empty-state');
+    const appMainEl             = document.getElementById('app-main');
+    const graphCanvas           = document.getElementById('loudness-graph');
 
     let decodedBuffer = null;
+    let selectedFile = null;
+    let videoObjectUrl = null;
+    let analysisVersion = 0;
 
     let turnTimings = [];   // トレーを回転するタイミングの配列
 
@@ -66,50 +185,144 @@
     const LOUD_PREROLL_SEC    = 0.5;    // 音が大きくなってから何秒後に回転を始めるか
     const QUIET_PREROLL_SEC   = 2.0;    // 音が小さくなる何秒前に回転を始めるか
 
-    // ファイルを選んだら解析ボタンを有効にする
+    // ファイルを選んだら自動で解析する
     fileInput.addEventListener('change', () => {
-      const file = fileInput.files?.[0];
-      if (file) {
-        analyzeButton.disabled = false;
-        statusEl.textContent = `${file.name} が選択されました。サイズ ${(file.size / 1024 / 1024).toFixed(1)} MB`;
-
-        // Blobでページに動画を埋め込む
-        let URL = window.URL || window.webkitURL;
-        videoEl.src = URL.createObjectURL(file);
-      } else {
-        analyzeButton.disabled = true;
-        statusEl.textContent = '音声ファイルを選んでください';
-      }
-      outputEl.textContent = '';
+      selectVideoFile(fileInput.files?.[0]);
     });
 
-    // 「解析する」を押したとき
-    analyzeButton.addEventListener('click', async () => {
-      const file = fileInput.files?.[0];
+    // トップバー以外を動画ファイルのドロップ領域にする
+    let dragDepth = 0;
+
+    document.addEventListener('dragover', event => event.preventDefault());
+    document.addEventListener('drop', event => event.preventDefault());
+
+    appMainEl.addEventListener('dragenter', event => {
+      if (!Array.from(event.dataTransfer?.types || []).includes('Files')) return;
+      event.preventDefault();
+      dragDepth++;
+      appMainEl.classList.add('drag-over');
+    });
+
+    appMainEl.addEventListener('dragover', event => {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'copy';
+    });
+
+    appMainEl.addEventListener('dragleave', () => {
+      dragDepth--;
+      if (dragDepth <= 0) {
+        dragDepth = 0;
+        appMainEl.classList.remove('drag-over');
+      }
+    });
+
+    appMainEl.addEventListener('drop', event => {
+      event.preventDefault();
+      dragDepth = 0;
+      appMainEl.classList.remove('drag-over');
+
+      const file = event.dataTransfer?.files?.[0];
+      if (!selectVideoFile(file)) return;
+
+      // ファイル入力にもドロップしたファイル名を反映する
+      try {
+        const transfer = new DataTransfer();
+        transfer.items.add(file);
+        fileInput.files = transfer.files;
+      } catch (e) {
+        // FileListを設定できないブラウザでも、動画の読み込み自体は継続する
+      }
+    });
+
+    function selectVideoFile(file) {
+      // 進行中の古い解析結果を無効にする
+      analysisVersion++;
+      analysisLoadingEl.classList.add('d-none');
+
+      if (!file) {
+        selectedFile = null;
+        analyzeButton.disabled = true;
+        statusEl.textContent = '動画ファイルを選択してください（MP4推奨）';
+        return false;
+      }
+
+      if (!file.type.startsWith('video/') && !file.type.startsWith('audio/')) {
+        selectedFile = null;
+        analyzeButton.disabled = true;
+        statusEl.textContent = '動画または音声ファイルを選択してください。';
+        return false;
+      }
+
+      selectedFile = file;
+      analyzeButton.disabled = true;
+      analyzeButton.classList.add('d-none');
+      playButton.disabled = true;
+      rewindButton.disabled = true;
+      setPlayButtonState(false);
+      statusEl.textContent = `${file.name} が選択されました。サイズ ${(file.size / 1024 / 1024).toFixed(1)} MB`;
+      outputEl.textContent = '';
+      decodedBuffer = null;
+      turnTimings = [];
+
+      videoEl.pause();
+      videoContainerEl.classList.remove('d-none');
+      analysisLoadingEl.classList.remove('d-none');
+      resultEl.classList.add('d-none');
+      emptyStateEl.classList.add('d-none');
+      graph.setBars(null, null, []);
+      graph.drawAt(0);
+
+      const URL = window.URL || window.webkitURL;
+      if (videoObjectUrl) URL.revokeObjectURL(videoObjectUrl);
+      videoObjectUrl = URL.createObjectURL(file);
+      videoEl.src = videoObjectUrl;
+      analyzeSelectedFile();
+      return true;
+    }
+
+    // 自動解析に失敗した場合のみ、ボタンから再解析する
+    analyzeButton.addEventListener('click', analyzeSelectedFile);
+
+    async function analyzeSelectedFile() {
+      const file = selectedFile;
       if (!file) return;
 
+      const currentVersion = ++analysisVersion;
       analyzeButton.disabled = true;
+      analyzeButton.classList.add('d-none');
+      playButton.disabled = true;
+      rewindButton.disabled = true;
+      analysisLoadingEl.classList.remove('d-none');
+      resultEl.classList.add('d-none');
       statusEl.textContent = 'ファイルを読み込み中...';
 
-      try {
-        const arrayBuffer = await file.arrayBuffer();
+      let audioContext = null;
 
+      try {
         // AudioContext の初期化
         const AC = window.AudioContext || window.webkitAudioContext;
-        const audioContext = new AC();
+        audioContext = new AC();
+
+        const arrayBuffer = await file.arrayBuffer();
+        if (currentVersion !== analysisVersion) return;
 
         // 音声デコード
-        decodedBuffer = await decodeAudio(arrayBuffer, audioContext);
-        const durationSec = decodedBuffer.length / decodedBuffer.sampleRate;
+        const nextDecodedBuffer = await decodeAudio(arrayBuffer, audioContext);
+        if (currentVersion !== analysisVersion) return;
+
+        decodedBuffer = nextDecodedBuffer;
+        const durationSec = nextDecodedBuffer.length / nextDecodedBuffer.sampleRate;
         statusEl.textContent =
-          `音声をデコードしました: ${decodedBuffer.sampleRate} Hz, ` +
-          `${decodedBuffer.numberOfChannels} ch, 長さ ${durationSec.toFixed(1)} 秒。解析中...`;
+          `音声をデコードしました: ${nextDecodedBuffer.sampleRate} Hz, ` +
+          `${nextDecodedBuffer.numberOfChannels} ch, 長さ ${durationSec.toFixed(1)} 秒。解析中...`;
 
         // AudioContextのクローズ
         await audioContext.close();
+        audioContext = null;
 
         // 解析本体
-        const result = analyzeLoudness(decodedBuffer);
+        const result = analyzeLoudness(nextDecodedBuffer);
+        if (currentVersion !== analysisVersion) return;
 
         // 音量グラフの表示
         const bars = buildBarsFromSmoothDb(
@@ -129,36 +342,57 @@
 
         statusEl.textContent =
           '解析完了！';
-        analyzeButton.disabled = false;
         playButton.disabled = false;
         rewindButton.disabled = false;
-        videoContainerEl.style.visibility = "visible";
-        resutlEl.style.visibility = "visible";
+        analysisLoadingEl.classList.add('d-none');
+        videoContainerEl.classList.remove('d-none');
+        resultEl.classList.remove('d-none');
+        emptyStateEl.classList.add('d-none');
       } catch (e) {
+        if (currentVersion !== analysisVersion) return;
+
         console.error(e);
         statusEl.textContent =
-          'デコードに失敗しました。';
+          '解析に失敗しました。「もう一度解析」を押してください。';
+        analysisLoadingEl.classList.add('d-none');
+        analyzeButton.textContent = 'もう一度解析';
         analyzeButton.disabled = false;
+        analyzeButton.classList.remove('d-none');
+      } finally {
+        if (audioContext && audioContext.state !== 'closed') {
+          try {
+            await audioContext.close();
+          } catch (e) {
+            console.warn('AudioContextを終了できませんでした。', e);
+          }
+        }
       }
-    });
+    }
 
     // 「再生 / 一時停止」を押したとき
     playButton.addEventListener('click', async () => {
       if(videoEl.paused){
         // 再生する
         videoEl.play();
-        playButton.textContent = '一時停止';
       } else {
         // 一時停止する
         videoEl.pause();
-        playButton.textContent = '再生';
       }
     });
+
+    function setPlayButtonState(isPlaying) {
+      const label = isPlaying ? '一時停止' : '再生';
+      playButtonIcon.textContent = isPlaying ? 'Ⅱ' : '▶';
+      playButton.setAttribute('aria-label', label);
+      playButton.title = label;
+    }
     
     // 「最初から」を押したとき
     rewindButton.addEventListener('click', async () => {
-      // 再生秒数を戻す
+      // 再生を止めて、再生秒数を戻す
+      videoEl.pause();
       videoEl.currentTime = 0;
+      setPlayButtonState(false);
       // 過去のeventのリストをhaveUsedを戻す
       turnTimings.forEach(item => {
         item.haveUsed = false;
@@ -167,18 +401,32 @@
 
     // 「動画を変える」を押したとき
     topButton.addEventListener('click', async () => {
+      // 進行中の解析結果を無効にする
+      analysisVersion++;
+
       // 表示の初期化
       analyzeButton.disabled = true;
+      analyzeButton.classList.add('d-none');
       playButton.disabled = true;
       rewindButton.disabled = true;
-      statusEl.textContent = '動画ファイルを選択 or グレーのエリアにドラッグ&ドロップしてください（mp4推奨）';
+      statusEl.textContent = '動画ファイルを選択してください（MP4推奨）';
       outputEl.textContent = '';
-      videoContainerEl.style.visibility = "hidden";
-      resutlEl.style.visibility = "hidden";
+      videoContainerEl.classList.add('d-none');
+      resultEl.classList.add('d-none');
+      analysisLoadingEl.classList.add('d-none');
+      emptyStateEl.classList.remove('d-none');
 
       // 変数の初期化
+      videoEl.pause();
+      setPlayButtonState(false);
       fileInput.value = '';
-      videoEl.src = '';
+      selectedFile = null;
+      if (videoObjectUrl) {
+        URL.revokeObjectURL(videoObjectUrl);
+        videoObjectUrl = null;
+      }
+      videoEl.removeAttribute('src');
+      videoEl.load();
       decodedBuffer = null;
       turnTimings = [];
     });
@@ -187,9 +435,18 @@
     const graph = createDbGraph(graphCanvas, { dbMin: -60, dbMax: 0 });
     graph.bindCurrentTime(() => videoEl.currentTime);
 
-    videoEl.addEventListener("play", () => graph.start());
-    videoEl.addEventListener("pause", () => graph.stop());
-    videoEl.addEventListener("ended", () => graph.stop());
+    videoEl.addEventListener("play", () => {
+      graph.start();
+      setPlayButtonState(true);
+    });
+    videoEl.addEventListener("pause", () => {
+      graph.stop();
+      setPlayButtonState(false);
+    });
+    videoEl.addEventListener("ended", () => {
+      graph.stop();
+      setPlayButtonState(false);
+    });
     videoEl.addEventListener("seeked", () => graph.drawAt(videoEl.currentTime));
 
     // obniz接続時のみ回転
@@ -485,7 +742,7 @@
     function createDbGraph(canvas, {
       dbMin = -60,
       dbMax = 0,
-      bg = "black",
+      bg = "transparent",
       line = "red",
       quietBarFill = "rgba(255,255,255,0.35)",
       loudBarFill  = "rgba(120,255,160,0.35)",
@@ -501,6 +758,8 @@
       let bars = null;
       let durationSec = null;
       let eventsSorted = [];
+      let loudRanges = [];
+      let quietRanges = [];
 
       let rafId = null;
       let getCurrentTime = null;
@@ -518,6 +777,42 @@
         eventsSorted = Array.isArray(nextEvents)
           ? [...nextEvents].sort((a, b) => a.time - b.time)
           : [];
+
+        // 緑色になる各区間の開始・終了時刻を作る
+        loudRanges = [];
+        quietRanges = [];
+        if (!durationSec) return;
+
+        if (eventsSorted.length > 0) {
+          let loudStart = eventsSorted[0].type === "QUIET_START" ? 0 : null;
+
+          for (const event of eventsSorted) {
+            const time = Math.max(0, Math.min(durationSec, event.time));
+
+            if (event.type === "LOUD_START" && loudStart === null) {
+              loudStart = time;
+            } else if (event.type === "QUIET_START" && loudStart !== null) {
+              if (time > loudStart) loudRanges.push({ start: loudStart, end: time });
+              loudStart = null;
+            }
+          }
+
+          if (loudStart !== null && durationSec > loudStart) {
+            loudRanges.push({ start: loudStart, end: durationSec });
+          }
+        }
+
+        // 緑色以外の範囲を白色の区間として作る
+        let quietStart = 0;
+        for (const range of loudRanges) {
+          if (range.start > quietStart) {
+            quietRanges.push({ start: quietStart, end: range.start });
+          }
+          quietStart = Math.max(quietStart, range.end);
+        }
+        if (quietStart < durationSec) {
+          quietRanges.push({ start: quietStart, end: durationSec });
+        }
       }
 
       function drawAt(currentTimeSec) {
@@ -557,6 +852,43 @@
             const y = dbToY(bars[x], H);
             ctx.fillRect(x, y, 1, H - y);
           }
+        }
+
+        // 各区間の中央に、不透明な絵文字を1つ表示
+        if (durationSec && durationSec > 0) {
+          ctx.save();
+          ctx.globalAlpha = 1;
+          ctx.fillStyle = "#fff";
+          ctx.font = '22px "Apple Color Emoji", "Segoe UI Emoji", sans-serif';
+          ctx.textAlign = "center";
+          ctx.textBaseline = "alphabetic";
+          const markerY = H / 2 + 6;
+
+          // 絵文字ごとの上下余白を補正し、見た目の中心を揃える
+          function getBaselineOffset(emoji) {
+            const metrics = ctx.measureText(emoji);
+            const ascent = metrics.actualBoundingBoxAscent || 0;
+            const descent = metrics.actualBoundingBoxDescent || 0;
+            return (ascent - descent) / 2;
+          }
+
+          for (const range of quietRanges) {
+            const centerTime = (range.start + range.end) / 2;
+            const x = (centerTime / durationSec) * W;
+            ctx.fillText("🤫", x, markerY + getBaselineOffset("🤫"));
+          }
+
+          for (const range of loudRanges) {
+            const centerTime = (range.start + range.end) / 2;
+            const x = (centerTime / durationSec) * W;
+            ctx.save();
+            ctx.translate(x, markerY);
+            ctx.rotate(Math.PI / 6);
+            ctx.fillText("🍿", 0, getBaselineOffset("🍿"));
+            ctx.restore();
+          }
+
+          ctx.restore();
         }
 
         // 再生位置の赤線
