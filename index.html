@@ -1,10 +1,67 @@
-<html>
+<!DOCTYPE html>
+<html lang="ja">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>ポップコーン食べどき検出</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-9ndCyUaIbzAi2FUVXJi0CjmCapSmO7SnpJef0486qhLnuZ2cdeRhO02iuK6FUUVM" crossorigin="anonymous">
-    <link rel="stylesheet" href="/css/starter-sample.css" />
+    <style>
+      html, body { height: 100%; }
+      body { background: #0b0d12; }
+      #status { max-width: 420px; }
+      .file-input { width: 230px; }
+      .app-main { min-height: 0; }
+
+      .video-stage {
+        position: relative;
+        width: min(1280px, calc(100vw - 2rem), calc((100dvh - 110px) * 1.7778));
+        aspect-ratio: 16 / 9;
+        overflow: hidden;
+        background: #000;
+      }
+
+      .video-stage video {
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+      }
+
+      .sound-overlay {
+        position: absolute;
+        right: 0;
+        bottom: 0;
+        left: 0;
+        padding-top: 24px;
+        pointer-events: none;
+        background: linear-gradient(transparent, rgba(0, 0, 0, .8));
+      }
+
+      #roudness-graph {
+        width: 100%;
+        height: 72px;
+        display: block;
+        opacity: .9;
+      }
+
+      .result-panel {
+        z-index: 2;
+        width: min(330px, calc(100% - 2rem));
+        max-height: 42%;
+        backdrop-filter: blur(8px);
+      }
+
+      #output {
+        font-family: inherit;
+        font-size: 12px;
+        line-height: 1.6;
+        white-space: pre-wrap;
+      }
+
+      @media (max-width: 1199px) {
+        #status { max-width: calc(100vw - 80px); }
+        .video-stage { width: min(1280px, calc(100vw - 2rem), calc((100dvh - 150px) * 1.7778)); }
+      }
+    </style>
     <script src="https://code.jquery.com/jquery-3.2.1.min.js"></script>
     <script
       src="https://unpkg.com/obniz@3.0.0/obniz.js"
@@ -12,31 +69,57 @@
     ></script>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js" integrity="sha384-geWF76RCwLtnZ8qwWowPQNguL3RmwHVBC9FhGdlKrxdiJJigb/j/68SIy3Te4Bkz" crossorigin="anonymous"></script>
   </head>
-  <body>
+  <body class="vh-100 d-flex flex-column overflow-hidden text-white">
     <!-- <div id="obniz-debug"></div> -->
 
-  <!-- ファイル入力とボタン -->
-  <div>
-    <p id="status" class="mt-4 ms-4">動画ファイルを選択 or グレーのエリアにドラッグ&ドロップしてください（mp4推奨）</p>
-    <input id="fileInput" type="file" accept="audio/*,video/*" class="ms-4"><br>
-    <button id="analyzeButton" class="btn btn-danger mt-4 ms-4" disabled>🍿ポップコーンの食べどきを探す🍿</button>
-    <button id="playButton" class="btn btn-success mt-4 ms-2" disabled>再生</button>
-    <button id="rewindButton" class="btn btn-secondary mt-4 ms-2" disabled>最初から</button>
-    <button id="topButton" class="btn btn-dark mt-4 ms-2">動画を変える</button>
-  </div>
+    <!-- ファイル入力と操作ボタンをまとめたトップバー -->
+    <header class="navbar navbar-dark bg-black border-bottom flex-shrink-0 p-2">
+      <div class="container-fluid d-flex flex-column flex-xl-row align-items-stretch align-items-xl-center gap-2">
+        <div class="d-flex align-items-center gap-2 flex-shrink-0">
+          <span class="fs-3" aria-hidden="true">🍿</span>
+          <div class="overflow-hidden">
+            <h1 class="h6 fw-bold mb-0">ポップコーン食べどき検出</h1>
+            <p id="status" class="small text-secondary text-truncate mb-0" aria-live="polite">動画ファイルを選択してください（MP4推奨）</p>
+          </div>
+        </div>
 
+        <div class="d-flex gap-2 flex-nowrap overflow-auto ms-xl-auto" aria-label="動画操作">
+          <input id="fileInput" class="form-control form-control-sm file-input flex-shrink-0" type="file" accept="audio/*,video/*" aria-label="動画を選ぶ">
+          <button id="analyzeButton" class="btn btn-danger btn-sm flex-shrink-0" disabled>🍿 食べどきを探す</button>
+          <button id="playButton" class="btn btn-success btn-sm flex-shrink-0" disabled>再生</button>
+          <button id="rewindButton" class="btn btn-secondary btn-sm flex-shrink-0" disabled>最初から</button>
+          <button id="topButton" class="btn btn-outline-light btn-sm flex-shrink-0">動画を変える</button>
+        </div>
+      </div>
+    </header>
 
-  <!-- 動画をupしたらここに表示する -->
-  <div id="video-container" class="mt-4 ms-4" style="visibility: hidden;">
-    <video src="" width="1280"></video>
-    <canvas id="roudness-graph" width="1280" height="60" style="display: block;"></canvas>
-  </div>
+    <main class="app-main flex-grow-1 d-flex align-items-center justify-content-center p-3 overflow-hidden">
+      <div id="empty-state" class="text-center text-secondary border border-secondary border-opacity-25 rounded-4 p-5">
+        <span class="fs-1 d-block mb-2" aria-hidden="true">🎬</span>
+        <strong class="text-white d-block mb-1">映画をセットしてください</strong>
+        トップバーから動画ファイルを読み込めます。
+      </div>
 
-  <!-- 結果表示 -->
-  <div id="result" class="ms-4 mt-4 mb-4" style="visibility: hidden;">
-    <p>検出結果</p>
-    <pre id="output""></pre>
-  </div>
+      <!-- 動画をアップしたら中央に表示する -->
+      <div id="video-container" class="video-stage rounded-4 border border-secondary border-opacity-25 shadow-lg d-none">
+        <video playsinline></video>
+
+        <!-- 検出結果を動画上にコンパクトに表示 -->
+        <div id="result" class="result-panel position-absolute top-0 end-0 m-3 p-3 rounded-3 bg-dark bg-opacity-75 overflow-auto d-none">
+          <p class="small fw-bold text-warning mb-1">検出結果</p>
+          <pre id="output" class="text-white mb-0"></pre>
+        </div>
+
+        <!-- 音量グラフを動画下部にオーバーレイ -->
+        <div class="sound-overlay">
+          <div class="position-absolute top-0 start-0 w-100 d-flex justify-content-between px-3 small text-white-50">
+            <span>音量と食べどき</span>
+            <span>● ストップ　<span class="text-success">● 食べてOK</span></span>
+          </div>
+          <canvas id="roudness-graph" width="1280" height="72"></canvas>
+        </div>
+      </div>
+    </main>
 
   <script>
     const obniz = new Obniz("OBNIZ_ID_HERE");
@@ -44,12 +127,14 @@
     const fileInput             = document.getElementById('fileInput');
     const analyzeButton         = document.getElementById('analyzeButton');
     const playButton            = document.getElementById('playButton');
-    const rewindButton            = document.getElementById('rewindButton');
+    const rewindButton          = document.getElementById('rewindButton');
+    const topButton             = document.getElementById('topButton');
     const statusEl              = document.getElementById('status');
     const outputEl              = document.getElementById('output');
     const videoEl               = document.querySelector('video');
-    const resutlEl              = document.getElementById('result');
+    const resultEl              = document.getElementById('result');
     const videoContainerEl      = document.getElementById('video-container');
+    const emptyStateEl          = document.getElementById('empty-state');
     const graphCanvas           = document.getElementById('roudness-graph');
 
     let decodedBuffer = null;
@@ -132,8 +217,9 @@
         analyzeButton.disabled = false;
         playButton.disabled = false;
         rewindButton.disabled = false;
-        videoContainerEl.style.visibility = "visible";
-        resutlEl.style.visibility = "visible";
+        videoContainerEl.classList.remove('d-none');
+        resultEl.classList.remove('d-none');
+        emptyStateEl.classList.add('d-none');
       } catch (e) {
         console.error(e);
         statusEl.textContent =
@@ -157,8 +243,10 @@
     
     // 「最初から」を押したとき
     rewindButton.addEventListener('click', async () => {
-      // 再生秒数を戻す
+      // 再生を止めて、再生秒数を戻す
+      videoEl.pause();
       videoEl.currentTime = 0;
+      playButton.textContent = '再生';
       // 過去のeventのリストをhaveUsedを戻す
       turnTimings.forEach(item => {
         item.haveUsed = false;
@@ -171,12 +259,15 @@
       analyzeButton.disabled = true;
       playButton.disabled = true;
       rewindButton.disabled = true;
-      statusEl.textContent = '動画ファイルを選択 or グレーのエリアにドラッグ&ドロップしてください（mp4推奨）';
+      statusEl.textContent = '動画ファイルを選択してください（MP4推奨）';
       outputEl.textContent = '';
-      videoContainerEl.style.visibility = "hidden";
-      resutlEl.style.visibility = "hidden";
+      videoContainerEl.classList.add('d-none');
+      resultEl.classList.add('d-none');
+      emptyStateEl.classList.remove('d-none');
 
       // 変数の初期化
+      videoEl.pause();
+      playButton.textContent = '再生';
       fileInput.value = '';
       videoEl.src = '';
       decodedBuffer = null;
@@ -485,7 +576,7 @@
     function createDbGraph(canvas, {
       dbMin = -60,
       dbMax = 0,
-      bg = "black",
+      bg = "rgba(4, 7, 12, 0.68)",
       line = "red",
       quietBarFill = "rgba(255,255,255,0.35)",
       loudBarFill  = "rgba(120,255,160,0.35)",
